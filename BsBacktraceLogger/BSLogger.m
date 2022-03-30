@@ -3,10 +3,10 @@
 //  BSBacktraceLogger
 //
 //  Created by 张星宇 on 16/8/27.
-//  Copyright © 2016年 bestswifter. All rights reserved.
+//  Copyright © 2022 Ruswan Efendi. All rights reserved.
 //
 
-#import "BSBacktraceLogger.h"
+#import "BSLogger.h"
 #import <mach/mach.h>
 #include <dlfcn.h>
 #include <pthread.h>
@@ -15,6 +15,7 @@
 #include <string.h>
 #include <mach-o/dyld.h>
 #include <mach-o/nlist.h>
+#include <mach-o/arch.h>
 
 #pragma -mark DEFINE MACRO FOR DIFFERENT CPU ARCHITECTURE
 #if defined(__arm64__)
@@ -65,6 +66,20 @@
 #define BS_NLIST struct nlist
 #endif
 
+
+#define CRASH_ARM64_PTR_MASK 0x0000000FFFFFFFFF
+
+uintptr_t wx_normaliseInstructionPointer(uintptr_t ip)
+{
+#if defined(__arm64__)
+    const NXArchInfo *info = NXGetLocalArchInfo();
+    if (info != NULL && info->cpusubtype == CPU_SUBTYPE_ARM64E) {
+        return ip & CRASH_ARM64_PTR_MASK;
+    }
+#endif
+    return ip;
+}
+
 typedef struct BSStackFrameEntry{
     const struct BSStackFrameEntry *const previous;
     const uintptr_t return_address;
@@ -72,7 +87,7 @@ typedef struct BSStackFrameEntry{
 
 static mach_port_t main_thread_id;
 
-@implementation BSBacktraceLogger
+@implementation BSLogger
 
 + (void)load {
     main_thread_id = mach_thread_self();
@@ -141,7 +156,7 @@ NSString *_bs_backtraceOfThread(thread_t thread) {
     }
     
     for(; i < 50; i++) {
-        backtraceBuffer[i] = frame.return_address;
+        backtraceBuffer[i] = wx_normaliseInstructionPointer(frame.return_address);
         if(backtraceBuffer[i] == 0 ||
            frame.previous == 0 ||
            bs_mach_copyMem(frame.previous, &frame, sizeof(frame)) != KERN_SUCCESS) {
