@@ -8,6 +8,7 @@
 
 #import "BSBacktraceLogger.h"
 
+#import <dispatch/dispatch.h>
 #import <dlfcn.h>
 #import <inttypes.h>
 #import <limits.h>
@@ -64,6 +65,17 @@ typedef struct BSStackFrameEntry {
 
 static mach_port_t main_thread_id = MACH_PORT_NULL;
 
+/// Caches the Mach port of the main thread. Only call this from the main
+/// thread: `mach_thread_self()` returns a port for the *calling* thread.
+///
+/// The port's send right is intentionally never deallocated, because the cache
+/// lives for the entire process.
+static void bs_cacheMainThreadPort(void) {
+    if (main_thread_id == MACH_PORT_NULL) {
+        main_thread_id = mach_thread_self();
+    }
+}
+
 #pragma mark - Forward declarations
 
 static uintptr_t bs_normaliseInstructionPointer(uintptr_t instructionPointer);
@@ -90,9 +102,18 @@ static uintptr_t bs_segmentBaseOfImageIndex(const uint32_t idx);
 @implementation BSLogger
 
 + (void)load {
-    // +load runs on the main thread while images are being loaded, which makes
-    // it a safe place to cache the main thread's Mach port.
-    main_thread_id = mach_thread_self();
+    // +load normally runs on the main thread, but an image that is loaded
+    // dynamically can run it on a background thread. Only trust the port when
+    // we really are on the main thread; otherwise populate the cache on the
+    // main queue so it is ready before the first capture.
+    if (pthread_main_np() != 0) {
+        bs_cacheMainThreadPort();
+        return;
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        bs_cacheMainThreadPort();
+    });
 }
 
 #pragma mark - Public API
@@ -182,29 +203,33 @@ static NSString *bs_backtraceOfMachThread(thread_t thread) {
         backtraceBuffer[frameCount++] = linkRegister;
     }
 
+    // A thread without a readable frame pointer can still have valid pc/lr
+    // values, so keep those frames and report the failure along with them
+    // instead of discarding the whole backtrace.
     BSStackFrameEntry frame = {0};
     const uintptr_t framePointer = bs_mach_framePointer(&machineContext);
-    if (framePointer == 0 ||
-        bs_mach_copyMem((void *)framePointer, &frame, sizeof(frame)) != KERN_SUCCESS) {
-        return @"Fail to get frame pointer";
-    }
+    const BOOL canWalkFrames =
+        framePointer != 0 &&
+        bs_mach_copyMem((void *)framePointer, &frame, sizeof(frame)) == KERN_SUCCESS;
 
-    uintptr_t previousFramePointer = framePointer;
-    while (frameCount < BS_MAX_BACKTRACE_LENGTH) {
-        const uintptr_t returnAddress = bs_normaliseInstructionPointer(frame.return_address);
-        if (returnAddress == 0) {
-            break;
+    if (canWalkFrames) {
+        uintptr_t previousFramePointer = framePointer;
+        while (frameCount < BS_MAX_BACKTRACE_LENGTH) {
+            const uintptr_t returnAddress = bs_normaliseInstructionPointer(frame.return_address);
+            if (returnAddress == 0) {
+                break;
+            }
+
+            backtraceBuffer[frameCount++] = returnAddress;
+
+            const uintptr_t nextFramePointer = (uintptr_t)frame.previous;
+            if (nextFramePointer == 0 ||
+                nextFramePointer <= previousFramePointer ||
+                bs_mach_copyMem(frame.previous, &frame, sizeof(frame)) != KERN_SUCCESS) {
+                break;
+            }
+            previousFramePointer = nextFramePointer;
         }
-
-        backtraceBuffer[frameCount++] = returnAddress;
-
-        const uintptr_t nextFramePointer = (uintptr_t)frame.previous;
-        if (nextFramePointer == 0 ||
-            nextFramePointer <= previousFramePointer ||
-            bs_mach_copyMem(frame.previous, &frame, sizeof(frame)) != KERN_SUCCESS) {
-            break;
-        }
-        previousFramePointer = nextFramePointer;
     }
 
     Dl_info symbolicated[BS_MAX_BACKTRACE_LENGTH] = {0};
@@ -217,6 +242,9 @@ static NSString *bs_backtraceOfMachThread(thread_t thread) {
             continue;
         }
         [resultString appendString:bs_logBacktraceEntry(backtraceBuffer[index], &symbolicated[index])];
+    }
+    if (!canWalkFrames) {
+        [resultString appendString:@"Fail to get frame pointer\n"];
     }
     [resultString appendString:@"\n"];
 
@@ -232,6 +260,11 @@ static BOOL bs_machThreadFromNSThread(NSThread *nsthread, thread_t *outThread, B
     }
 
     if ([nsthread isMainThread]) {
+        if (main_thread_id == MACH_PORT_NULL && pthread_main_np() != 0) {
+            // +load can run on a background thread when the image is loaded
+            // dynamically; fill the cache the first time the main thread asks.
+            bs_cacheMainThreadPort();
+        }
         if (main_thread_id == MACH_PORT_NULL) {
             return NO;
         }
@@ -263,6 +296,10 @@ static BOOL bs_machThreadFromNSThread(NSThread *nsthread, thread_t *outThread, B
     }
 
     const char *targetName = name.UTF8String;
+    // Foundation copies `NSThread.name` to the underlying pthread at thread
+    // start, but pthread names are capped at 64 bytes including the
+    // terminator. Longer names are not propagated at all by `pthread_setname_np`
+    // and therefore cannot be matched here.
     BOOL found = NO;
 
     for (mach_msg_type_number_t index = 0; index < threadCount; index++) {

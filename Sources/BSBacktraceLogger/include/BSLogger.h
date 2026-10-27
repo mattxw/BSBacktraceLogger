@@ -36,8 +36,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Returns a human-readable backtrace of `thread`.
 ///
 /// The current thread and the main thread are always supported. Any other
-/// thread can only be resolved when it has a unique name that was assigned
-/// before the thread was started; otherwise a failure description is returned.
+/// thread can only be resolved when it has a unique name of at most 63
+/// characters that was assigned before the thread was started; otherwise a
+/// failure description is returned.
 + (nullable NSString *)bs_backtraceOfNSThread:(NSThread *)thread;
 
 @end

@@ -116,8 +116,9 @@ mangled names (for example `$s13BacktraceDemo…`); pipe them through
 - Any other `NSThread` can only be resolved when it has a unique name that was
   assigned **before the thread was started**. Foundation copies that name to
   the underlying pthread at start time, which lets the logger match the thread.
-  If the thread is unnamed, `bs_backtraceOfNSThread:` returns a failure string
-  instead of guessing.
+  Names must be at most 63 characters; longer names are not propagated to the
+  pthread and cannot be matched. If the thread is unnamed,
+  `bs_backtraceOfNSThread:` returns a failure string instead of guessing.
 
 ## Limitations
 
