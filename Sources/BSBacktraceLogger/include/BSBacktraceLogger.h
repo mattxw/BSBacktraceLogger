@@ -14,6 +14,4 @@ FOUNDATION_EXPORT double BSBacktraceLoggerVersionNumber;
 //! Project version string for BSBacktraceLogger.
 FOUNDATION_EXPORT const unsigned char BSBacktraceLoggerVersionString[];
 
-// In this header, you should import all the public headers of your framework using statements like #import <BSBacktraceLogger/PublicHeader.h>
-
 #import "BSLogger.h"

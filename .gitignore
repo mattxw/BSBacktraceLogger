@@ -4,8 +4,11 @@
 
 ## Build generated
 build/
+.build/
+.swiftpm/
 .DS_Store
 DerivedData
+Package.resolved
 
 ## Various settings
 *.pbxuser
